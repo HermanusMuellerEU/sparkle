@@ -144,10 +144,11 @@ export async function updateAggregateForEvent(eventFilename, eventData = null) {
 /**
  * Rebuild all aggregates from event files
  * @param {Function} progressCallback - Optional callback(current, total)
+ * @param {{sparkleVersion?: string}} [options]
  * @returns {Promise<void>}
  */
-export async function rebuildAll(progressCallback = null) {
-  return await requireModel().rebuildAll(progressCallback);
+export async function rebuildAll(progressCallback = null, options = {}) {
+  return await requireModel().rebuildAll(progressCallback, options);
 }
 
 /**

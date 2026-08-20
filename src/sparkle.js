@@ -1045,9 +1045,10 @@ export function onAggregateChanged(callback) {
 /**
  * Rebuild all aggregates from events
  * @param {Function} progressCallback - Optional callback(current, total)
+ * @param {{sparkleVersion?: string}} [options]
  */
-export async function rebuildAllAggregates(progressCallback) {
-  return await aggregateManager.rebuildAll(progressCallback);
+export async function rebuildAllAggregates(progressCallback, options) {
+  return await aggregateManager.rebuildAll(progressCallback, options);
 }
 
 /**

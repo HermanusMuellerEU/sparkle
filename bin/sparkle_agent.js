@@ -15,6 +15,7 @@ import { existsSync, createWriteStream, readFileSync, unlinkSync } from 'fs';
 import * as portFile from '../src/portFile.js';
 import * as sparkle from '../src/sparkle.js';
 import { SPARKLE_VERSION } from '../src/version.js';
+import { isSparkleVersionOlder } from '../src/sparkleVersion.js';
 import { execSyncWithOptions, execAsync } from '../src/execUtils.js';
 import {
   getGitRoot,
@@ -92,6 +93,9 @@ let isFetchInProgress = false; // Track if a fetch operation is currently runnin
 let rebuildInProgress = false; // Track if aggregate rebuild is in progress
 let rebuildProgress = { current: 0, total: 0 }; // Rebuild progress tracking
 let rebuildStartTime = null; // Track when rebuild started
+let versionRebuildPending = false; // Hold data requests until version-change rebuild finishes
+let versionRebuildGate = Promise.resolve();
+let releaseVersionRebuildGate = null;
 let shuttingDown = false; // Track if daemon is shutting down - never reset to false
 let loggingEnabled = false; // Track if file logging has been set up
 let logStream = null; // File stream for logging
@@ -1117,6 +1121,18 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // Hold data requests until a version-change rebuild finishes. Ping still answers so
+  // liveness checks (1s testPort, second-launch detection) see this process. Shutdown
+  // must not wait or an upgrade could not replace a daemon stuck in a long rebuild.
+  const isShutdown = path === '/api/shutdown' && req.method === 'POST';
+  if (versionRebuildPending && path === '/api/ping') {
+    sendJSON(res, 503, { rebuilding: true, status: 'starting' });
+    return;
+  }
+  if (!isShutdown) {
+    await versionRebuildGate;
+  }
+
   try {
     // Serve HTML pages
     // Redirect root to list_view.html (no hidden defaults)
@@ -1990,6 +2006,17 @@ async function main() {
     await setupSparkleEnvironment();
     if (logger) logger.info('Sparkle environment setup complete');
 
+    const aggregateMetadata = await sparkle.getAggregateMetadata();
+    if (isSparkleVersionOlder(aggregateMetadata?.sparkleVersion, SPARKLE_VERSION)) {
+      versionRebuildPending = true;
+      versionRebuildGate = new Promise(resolve => {
+        releaseVersionRebuildGate = resolve;
+      });
+      const builtWith = aggregateMetadata?.sparkleVersion || 'unknown';
+      console.log(`Aggregate store built with ${builtWith}; current ${SPARKLE_VERSION}. Holding requests until rebuilt.`);
+      if (logger) logger.info('Version-change aggregate rebuild required', { builtWith, current: SPARKLE_VERSION });
+    }
+
     // Start file logging now that sparkleDataPath definitely exists
     await startLogging();
 
@@ -2107,8 +2134,30 @@ async function main() {
       // Write port file
       if (logger) logger.info('Writing port file');
       await writePortFile(port);
+      if (logger) logger.info('Port file written');
+
+      if (releaseVersionRebuildGate) {
+        const previousRequestTimeout = server.requestTimeout;
+        server.requestTimeout = 0;
+        try {
+          console.log(`Rebuilding aggregates for Sparkle ${SPARKLE_VERSION}...`);
+          if (logger) logger.info('Version-change aggregate rebuild starting', { version: SPARKLE_VERSION });
+          await sparkle.rebuildAllAggregates(null, { sparkleVersion: SPARKLE_VERSION });
+          console.log('Aggregate rebuild for version change complete.');
+          if (logger) logger.info('Version-change aggregate rebuild complete');
+        } catch (error) {
+          console.error('Version-change aggregate rebuild failed:', error.message);
+          if (logger) logger.error('Version-change aggregate rebuild failed', { error: error.message });
+        } finally {
+          server.requestTimeout = previousRequestTimeout;
+          versionRebuildPending = false;
+          releaseVersionRebuildGate();
+          releaseVersionRebuildGate = null;
+        }
+      }
+
       console.log('Daemon is ready.');
-      if (logger) logger.info('Daemon ready, port file written');
+      if (logger) logger.info('Daemon ready');
 
       // Reconciliation + aggregate validation. Deliberately AFTER the port file is
       // written: the CLI waits on that file, so anything run before it is time the user

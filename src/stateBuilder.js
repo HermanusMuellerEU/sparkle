@@ -232,7 +232,8 @@ function buildActiveMonitors(files) {
     // Latest action determines if active
     const latest = events[events.length - 1];
     if (latest.action === 'added') {
-      active.set(hash, latest.data.person);
+      // Include hash so incremental remove can match the same identity the add path stores.
+      active.set(hash, { hash, ...latest.data.person });
     }
   }
 

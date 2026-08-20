@@ -28,6 +28,22 @@ describe('Sparkle - Monitors', () => {
       const detailsWithoutMonitor = await sparkle.getItemDetails(item);
       expect(detailsWithoutMonitor.monitors.length).toBe(0);
     });
+
+    test('clearing monitor after aggregate rebuild stops monitoring', async () => {
+      const item = await sparkle.createItem('Test item');
+
+      await sparkle.addMonitor(item);
+      const detailsWithMonitor = await sparkle.getItemDetails(item);
+      expect(detailsWithMonitor.monitors.length).toBe(1);
+
+      // Rebuild drops any incremental-only fields. Clearing must still work.
+      await sparkle.rebuildAggregate(item);
+
+      await sparkle.removeMonitor(item);
+
+      const detailsWithoutMonitor = await sparkle.getItemDetails(item);
+      expect(detailsWithoutMonitor.monitors.length).toBe(0);
+    });
   });
 
   describe('Idempotency', () => {

@@ -675,9 +675,11 @@ export class AggregateModel {
   /**
    * Rebuild all aggregates from events
    * @param {Function} progressCallback - Optional callback(current, total)
+   * @param {{sparkleVersion?: string}} [options] - If sparkleVersion is set, recorded in
+   *   metadata only after this rebuild completes successfully.
    * @returns {Promise<void>}
    */
-  async rebuildAll(progressCallback = null) {
+  async rebuildAll(progressCallback = null, options = {}) {
     this._ensureInitialized();
 
     if (this.rebuildInProgress) {
@@ -717,11 +719,16 @@ export class AggregateModel {
         }
       }
 
-      // Update metadata
-      await this.updateMetadata({
+      // Update metadata. sparkleVersion is written here — after the loop — so a crash
+      // mid-rebuild leaves the old (or missing) version and the next start retries.
+      const metadataUpdate = {
         lastRebuildTimestamp: new Date().toISOString(),
         totalItems: itemIds.length
-      });
+      };
+      if (options.sparkleVersion) {
+        metadataUpdate.sparkleVersion = options.sparkleVersion;
+      }
+      await this.updateMetadata(metadataUpdate);
 
       console.log(`Rebuilt all ${itemIds.length} aggregates in ${Date.now() - startTime}ms`);
     } finally {
@@ -952,6 +959,20 @@ export class AggregateModel {
   }
 
   /**
+   * Whether a stored monitor is the same person as this event.
+   *
+   * Rebuilds used to omit `hash`, so hash-only matching left those monitors in place
+   * after a remove. Fall back to name+email when hash is missing on either side.
+   * @private
+   */
+  _sameMonitor(monitor, hash, person) {
+    if (monitor.hash && hash) {
+      return monitor.hash === hash;
+    }
+    return !!person && monitor.email === person.email && monitor.name === person.name;
+  }
+
+  /**
    * Apply an incremental update to an aggregate
    * @private
    */
@@ -1020,11 +1041,11 @@ export class AggregateModel {
         aggregate.monitors = aggregate.monitors || [];
 
         if (action === 'added') {
-          if (!aggregate.monitors.find(m => m.hash === hash)) {
+          if (!aggregate.monitors.find(m => this._sameMonitor(m, hash, eventData.person))) {
             aggregate.monitors.push({ hash, ...eventData.person });
           }
         } else if (action === 'removed') {
-          aggregate.monitors = aggregate.monitors.filter(m => m.hash !== hash);
+          aggregate.monitors = aggregate.monitors.filter(m => !this._sameMonitor(m, hash, eventData.person));
         }
         break;
 

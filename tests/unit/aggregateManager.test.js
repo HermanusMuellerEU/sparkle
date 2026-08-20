@@ -253,6 +253,21 @@ describe('Aggregate Manager', () => {
       expect(lastCurrent).toBe(3);
       expect(lastTotal).toBe(3);
     });
+
+    test('records sparkleVersion in metadata only when provided', async () => {
+      await sparkle.createItem('Item 1', 'incomplete');
+
+      const before = await aggregateManager.getMetadata();
+      expect(before.sparkleVersion).toBeUndefined();
+
+      await sparkle.rebuildAllAggregates();
+      const afterPlain = await aggregateManager.getMetadata();
+      expect(afterPlain.sparkleVersion).toBeUndefined();
+
+      await sparkle.rebuildAllAggregates(null, { sparkleVersion: '1.3.0' });
+      const afterStamp = await aggregateManager.getMetadata();
+      expect(afterStamp.sparkleVersion).toBe('1.3.0');
+    });
   });
 
   describe('SSE Notification Callback', () => {
