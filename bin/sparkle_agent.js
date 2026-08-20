@@ -999,9 +999,14 @@ const STATUS_FILE_CONTENT_TYPES = {
  * Status file content is authored by whatever publishes it (a CI system), so it is not
  * trusted the way our own public/ assets are. The daemon's API has no authentication,
  * so an HTML report opened in a tab would otherwise run script against the daemon's own
- * origin and could drive any endpoint. `CSP: sandbox` drops it into a unique opaque
- * origin — it still renders, but it cannot reach the API. `nosniff` stops a text report
- * being re-interpreted as script.
+ * origin and could drive any endpoint.
+ *
+ * `sandbox` (without allow-same-origin) gives the document a unique opaque origin.
+ * `allow-scripts` lets inlined chart/report JS run. That is not enough on its own:
+ * the daemon answers CORS with `Access-Control-Allow-Origin: *`, so fetch from a
+ * unique origin would still reach the API. `connect-src 'none'` blocks fetch, XHR,
+ * EventSource and WebSocket. Never add `allow-same-origin` next to `allow-scripts`.
+ * `nosniff` stops a text report being re-interpreted as script.
  *
  * @param {Object} res - HTTP response
  * @param {string} name - Status file name (as published)
@@ -1015,7 +1020,7 @@ function sendStatusFile(res, name, content, asDownload) {
   const headers = {
     'Content-Type': `${contentType}; charset=utf-8`,
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': 'sandbox',
+    'Content-Security-Policy': "sandbox allow-scripts; connect-src 'none'",
     'Cache-Control': 'no-cache, no-store, must-revalidate'
   };
 

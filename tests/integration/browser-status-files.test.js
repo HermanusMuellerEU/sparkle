@@ -5,9 +5,9 @@
  *
  * Covers the browser half of the feature — the header button, the listing, viewing a
  * report in a new tab, and the download button — plus the two protections that are easy
- * to claim and easy to get wrong: a CI-authored report must not be able to script
- * against the daemon's (unauthenticated) origin, and a publisher-chosen name must never
- * be parsed as markup.
+ * to claim and easy to get wrong: a CI-authored report may run inlined chart JS, but
+ * must not reach the daemon's (unauthenticated) API, and a publisher-chosen name must
+ * never be parsed as markup.
  */
 
 import { join } from 'path';
@@ -129,16 +129,92 @@ describe('Browser status files view', () => {
 
   test('a report is served sandboxed, so it cannot script against the daemon', async () => {
     // The daemon API has no auth: an HTML report running on its origin could drive any
-    // endpoint. It must render, but in an opaque origin.
+    // endpoint. It must render, with scripts allowed for charts, but connect blocked.
     const page = await ctx.browser.newPage();
     try {
       const response = await page.goto(`${ctx.base}/api/statusFile?name=nightly.html`);
       const headers = response.headers();
+      const csp = headers['content-security-policy'];
 
-      expect(headers['content-security-policy']).toContain('sandbox');
+      expect(csp).toBe("sandbox allow-scripts; connect-src 'none'");
+      expect(csp).not.toMatch(/allow-same-origin/);
       expect(headers['x-content-type-options']).toBe('nosniff');
       expect(headers['content-type']).toContain('text/html');
       expect(await response.text()).toBe('<h1>Nightly</h1>\n');
+    } finally {
+      await page.close();
+    }
+  }, 90000);
+
+  test('inlined report JS can render charts but cannot reach the daemon API', async () => {
+    // Observe actual execution in Chromium, not just the CSP header. Bare `sandbox`
+    // used to block every script (Playwright would see the markers stay at their
+    // HTML defaults). allow-scripts lets the canvas/eval markers change; connect-src
+    // 'none' must still reject fetch so a report cannot drive the unauthenticated API.
+    await publish('charts.html', `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Charts</title></head>
+<body>
+  <canvas id="spark" width="10" height="10"></canvas>
+  <div id="chart">waiting</div>
+  <div id="eval-chart">waiting</div>
+  <div id="fetch-result">pending</div>
+  <div id="post-result">pending</div>
+  <script>
+    (function () {
+      var canvas = document.getElementById('spark').getContext('2d');
+      canvas.fillStyle = '#00ff00';
+      canvas.fillRect(0, 0, 10, 10);
+      var pixel = canvas.getImageData(0, 0, 1, 1).data;
+      document.getElementById('chart').textContent =
+        pixel[1] === 255 ? 'rendered' : 'canvas-failed';
+
+      document.getElementById('eval-chart').textContent = eval("'eval-rendered'");
+
+      fetch('/api/statusFiles')
+        .then(function () {
+          document.getElementById('fetch-result').textContent = 'api-reached';
+        })
+        .catch(function () {
+          document.getElementById('fetch-result').textContent = 'api-blocked';
+        });
+
+      fetch('/api/statusFiles/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'pwned-by-report.txt', text: 'should-not-land' })
+      })
+        .then(function () {
+          document.getElementById('post-result').textContent = 'post-reached';
+        })
+        .catch(function () {
+          document.getElementById('post-result').textContent = 'post-blocked';
+        });
+    })();
+  </script>
+</body>
+</html>
+`);
+
+    const page = await ctx.browser.newPage();
+    try {
+      await page.goto(`${ctx.base}/api/statusFile?name=${encodeURIComponent('charts.html')}`, {
+        waitUntil: 'load'
+      });
+
+      // These run in the page: canvas drawing and eval (typical of bundled chart JS).
+      expect(await page.locator('#chart').textContent()).toBe('rendered');
+      expect(await page.locator('#eval-chart').textContent()).toBe('eval-rendered');
+
+      // These must not complete: GET listing and POST publish against the daemon.
+      await page.waitForFunction(() => (
+        document.getElementById('fetch-result').textContent === 'api-blocked' &&
+        document.getElementById('post-result').textContent === 'post-blocked'
+      ), { timeout: 10000 });
+
+      const list = await page.request.get(`${ctx.base}/api/statusFiles`);
+      const body = await list.json();
+      expect(body.files.map(f => f.name)).not.toContain('pwned-by-report.txt');
     } finally {
       await page.close();
     }
